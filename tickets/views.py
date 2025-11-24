@@ -1,5 +1,8 @@
 from django.shortcuts import get_object_or_404
 from django.db import transaction, IntegrityError
+from django.db.utils import OperationalError
+import time
+import random
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
@@ -60,27 +63,38 @@ class BookSeatView(APIView):
 
         seat_number = serializer.validated_data['seat_number']
 
-        # Concurrency-safe booking using transaction and lock on show
-        try:
-            with transaction.atomic():
-                # Lock the show row to serialize bookings for the same show
-                Show.objects.select_for_update().get(pk=show_id)
+        # Concurrency-safe booking with retry logic
+        max_retries = 3
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                with transaction.atomic():
+                    # Lock the show row to serialize bookings for the same show
+                    Show.objects.select_for_update().get(pk=show_id)
 
-                # Prevent double booking
-                if Booking.objects.filter(show=show, seat_number=seat_number, status=Booking.STATUS_BOOKED).exists():
-                    return Response({'detail': 'Seat already booked.'}, status=status.HTTP_400_BAD_REQUEST)
+                    # Prevent double booking
+                    if Booking.objects.filter(show=show, seat_number=seat_number, status=Booking.STATUS_BOOKED).exists():
+                        return Response({'detail': 'Seat already booked.'}, status=status.HTTP_400_BAD_REQUEST)
 
-                # Create booking
-                booking = Booking.objects.create(
-                    user=request.user,
-                    show=show,
-                    seat_number=seat_number,
-                    status=Booking.STATUS_BOOKED,
-                )
-        except IntegrityError:
-            return Response({'detail': 'Seat booking conflict. Try again.'}, status=status.HTTP_409_CONFLICT)
+                    # Create booking
+                    booking = Booking.objects.create(
+                        user=request.user,
+                        show=show,
+                        seat_number=seat_number,
+                        status=Booking.STATUS_BOOKED,
+                    )
+                    return Response(BookingSerializer(booking).data, status=status.HTTP_201_CREATED)
+            except (IntegrityError, OperationalError) as exc:
+                # Likely a race on unique constraint; retry a few times with jitter
+                last_error = exc
+                # Small jittered backoff
+                time.sleep(0.05 + random.random() * 0.1)
 
-        return Response(BookingSerializer(booking).data, status=status.HTTP_201_CREATED)
+        # After retries, final check: if seat is booked now, respond clearly
+        if Booking.objects.filter(show=show, seat_number=seat_number, status=Booking.STATUS_BOOKED).exists():
+            return Response({'detail': 'Seat already booked.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({'detail': 'Seat booking conflict. Please retry later.'}, status=status.HTTP_409_CONFLICT)
 
 
 class CancelBookingView(APIView):
