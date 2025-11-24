@@ -90,7 +90,3 @@ curl -X POST http://localhost:8000/bookings/1/cancel/ -H "Authorization: Bearer 
 - Default DB is SQLite; no extra setup required.
 - Admin panel available at `/admin/`.
 - Concurrency: booking uses DB transaction with `select_for_update` lock on the show to reduce race conditions.
-
-## Submission
-Push to GitHub and share the repository link. Include this README and `requirements.txt`.
-Repository URL: https://github.com/easycodewithme/TurtleAssignment.git
